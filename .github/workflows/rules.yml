@@ -1,0 +1,51 @@
+name: rules
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SURICATA_IMAGE: jasonish/suricata:7.0.17
+  SNORT3_IMAGE: ciscotalos/snort3@sha256:f15f714fd61ade114b1039687dd43352cae26cd6401b89f2b03404e0d21e322f
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pcap generator dependencies
+        run: pip install -r tests/requirements.txt
+
+      - name: Pull engine images
+        run: |
+          docker pull "$SURICATA_IMAGE"
+          docker pull "$SNORT3_IMAGE"
+
+      - name: Legacy Snort 2 text files load (suricata -T, snort -T)
+        run: |
+          mkdir -p legacy
+          for f in ELITEWOLF_SNORT_AllenBradley_RockwellAutomation.txt \
+                   ELITEWOLF_SNORT_SchweitzerEngineeringLaboratories.txt \
+                   ELITEWOLF_SNORT_Siemens.txt; do
+            cat "$f"; echo
+          done > legacy/all.rules
+          docker run --rm -v "$PWD/legacy:/l:ro" "$SURICATA_IMAGE" \
+            suricata -T -v -S /l/all.rules -l /tmp
+          docker run --rm -v "$PWD/legacy:/l:ro" --entrypoint /home/snorty/snort3/bin/snort \
+            "$SNORT3_IMAGE" -c /home/snorty/snort3/etc/snort/snort.lua -R /l/all.rules -T \
+            2>&1 | tee legacy/snort.log
+          if grep -q "duplicates previous rule" legacy/snort.log; then
+            echo "duplicate SIDs in legacy files"; exit 1
+          fi
+
+      - name: Validate rules and replay pcap corpus (Suricata 7, Snort 3)
+        run: sh tests/run.sh
